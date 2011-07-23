@@ -566,7 +566,7 @@ def _completeFieldLists():
             if field_name in dfu_suffix_set:
                 raise ValueError('Dulpicate field name: ' + field_name)
             dfu_suffix_set.add(field_name)
-            field.append(calcsize(field[2]))
+            field.append(calcsize(field[1]))
 _completeFieldLists()
 del _completeFieldLists
 DFU_STM_PREFIX_LENGTH = sum(x[2] for x in DFU_STM_PREFIX_FIELD_LIST)
