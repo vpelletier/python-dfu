@@ -173,7 +173,7 @@ class DFUStatusError(DFUError):
         self.__state = state
         self.__status_message = status_message
         self.__extra = extra
-        super(self, DFUError).__init__()
+        super(DFUStatusError, self).__init__()
 
     def getStatus(self):
         return self.__status
@@ -257,7 +257,7 @@ class DFUProtocol(object):
         """
         self.__handle = handle
         self.__attributes, self.__detach_timeout, self.__transfer_size, \
-            dfu_version, self.__protocol, iface, self.__descriptor_list = \
+            dfu_version, self.__protocol, iface, descriptor_list = \
             getDFUDescriptor(handle.getDevice())
         self.__interface = iface
         self.__dfu_version = dfu_version
@@ -508,7 +508,7 @@ class DFUProtocol(object):
             try:
                 status_message = self.__handle.getASCIIStringDescriptor(
                     status_descriptor)
-            except:
+            except Exception:
                 extra = traceback.format_exc()
                 status_message = None
             else:
@@ -561,7 +561,7 @@ def _completeFieldLists():
     for field_list in (DFU_SUFFIX_FIELD_LIST, DFU_STM_PREFIX_FIELD_LIST,
             DFU_STM_TARGET_PREFIX_FIELD_LIST,
             DFU_STM_ELEMENT_PREFIX_FIELD_LIST):
-        for field in DFU_SUFFIX_FIELD_LIST:
+        for field in field_list:
             field_name = field[0]
             if field_name in dfu_suffix_set:
                 raise ValueError('Dulpicate field name: ' + field_name)
@@ -576,9 +576,8 @@ DFU_STM_ELEMENT_PREFIX_LENGTH = sum(
     x[2] for x in DFU_STM_ELEMENT_PREFIX_FIELD_LIST)
 def _parseFieldList(data, field_list):
     result = {}
-    read = stream.read
-    for name, fmt, length in DFU_STM_PREFIX_FIELD_LIST:
-        suffix_dict[name] = unpack(fmt, data[:length])[0]
+    for name, fmt, length in field_list:
+        result[name] = unpack(fmt, data[:length])[0]
         data = data[length:]
         if not data:
             break
@@ -641,21 +640,26 @@ class DFU(object):
                 offset = DFU_STM_PREFIX_LENGTH
                 for _ in xrange(stm_head['target_count']):
                     target_head = _parseFieldList(
-                        data[offset:offset + DFU_STM_TARGET_PREFIX_LENGTH])
-                    if stm_target_head['magic'] != 'Target':
-                        raise DFUFormatError('Invalid DfuSe target magic ' \
+                        data[offset:offset + DFU_STM_TARGET_PREFIX_LENGTH],
+                        DFU_STM_TARGET_PREFIX_FIELD_LIST)
+                    if target_head['magic'] != 'Target':
+                        raise DFUFormatError('Invalid DfuSe target magic '
                             'at 0x%x' % (offset, ))
                     offset += DFU_STM_TARGET_PREFIX_LENGTH
                     for _ in xrange(target_head['element_count']):
-                        element_head = _parseFieldList(data[offset:offset + \
-                            DFU_STM_ELEMENT_PREFIX_LENGTH])
+                        element_head = _parseFieldList(data[offset:offset +
+                            DFU_STM_ELEMENT_PREFIX_LENGTH],
+                            DFU_STM_ELEMENT_PREFIX_FIELD_LIST)
+                        offset += DFU_STM_ELEMENT_PREFIX_LENGTH
                         iface.STM_setAddress(element_head['address'])
                         #iface.STM_erasePage(element_head['address'])
-                        iface.
+                        self._download(data[offset:offset +
+                            element_head['size']])
+                        offset += element_head['size']
             else:
                 self._download(data[:-suffix_length])
         # Notify of EOF with an empty transfer
-        download('', blocknum)
+        self._download('')
         if not iface.isManifestationTolerant():
             self._reset('Download complete.')
 
@@ -734,24 +738,4 @@ class DFU(object):
                     ''.join(traceback.format_exception(*exc_info)),
                     traceback.format_exc())
             raise exc_info[0], exc_info[1], exc_info[2]
-
-if __name__ == '__main__':
-    import usb1
-    context = usb1.LibUSBContext()
-    handler = context.openByVendorIDAndProductID(0x0483, 0xdf11)
-    dfu = DFU(handler)
-    import pdb; pdb.set_trace()
-
-    class LoggingStream(object):
-        def __init__(self, stream):
-            self.__stream = stream
-            self.__total = 0
-    
-        def write(self, data):
-            self.__stream.write(data)
-            data_len = len(data)
-            self.__total += data_len
-            print 'Received:', data_len, self.__total
-
-    dfu.uploadStream(LoggingStream(open('firmware.raw', 'w')))
 
