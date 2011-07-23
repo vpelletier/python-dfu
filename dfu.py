@@ -1,4 +1,3 @@
-from cStringIO import StringIO
 from struct import pack, unpack, calcsize
 from zlib import crc32
 from time import sleep
@@ -488,13 +487,24 @@ class DFUProtocol(object):
             sleep(timeout / 1000)
         return blocknum
 
-    def upload(self, blocknum, length):
+    def upload(self, length, blocknum=None):
+        blocknum = self.getNextBlockNumber(blocknum)
         if self.__has_stm_extensions and blocknum < 2:
             raise ValueError('upload must not be called with blocknum < 2 '
                 'on devices supporting STM extensions')
-        result = self._controlRead(DFU_UPLOAD, blocknum, length)
-        self.checkStatus()
-        return result
+        try:
+            result = self._controlRead(DFU_UPLOAD, blocknum, length)
+            self.checkStatus()
+        except Exception:
+            exc_info = sys.exc_info()
+            try:
+                self.abort()
+            except Exception:
+                raise DoubleException(
+                    ''.join(traceback.format_exception(*exc_info)),
+                    traceback.format_exc())
+            raise exc_info[0], exc_info[1], exc_info[2]
+        return result, blocknum
 
     def getStatus(self):
         status, timeout, timeout_upper, state, status_descriptor = unpack(
@@ -582,6 +592,9 @@ def _parseFieldList(data, field_list):
         if not data:
             break
     return result
+def _generateFieldList(data_dict, field_list):
+    return pack(''.join(x[1] for x in field_list),
+        *[data_dict[x[0]] for x in field_list])
 
 class DFU(object):
     def __init__(self, handle):
@@ -672,12 +685,8 @@ class DFU(object):
             blocknum = download(data[:transfer_size], blocknum)
             data = data[transfer_size:]
 
-    def upload(self):
-        data = StringIO()
-        self.uploadStream(data)
-        return data.getvalue()
-
-    def uploadStream(self, stream):
+    def upload(self, vendor_specific=True, product_specific=True,
+            version=0xffff, stm_format=False):
         iface = self.__dfu_interface
         if not iface.canUpload():
             raise DFUUnsupportedError('Cannot upload')
@@ -688,54 +697,48 @@ class DFU(object):
             state = iface.getState()
         if state != DFU_STATE_DFU_IDLE:
             raise DFUBadSate(state)
-        write = stream.write
+        result = ''
         iface_upload = iface.upload
         transfer_size = iface.getTransferSize()
         checkStatus = iface.checkStatus
         abort = iface.abort
-        if iface.hasSTExtensions():
-            def upload():
-                # TODO: create a valid DfuSe file.
-                getNextBlockNumber = iface.getNextSTBlockNumber
-                setAddress = iface.STM_setAddress
-                for chunk in iface.STM_getDeviceMappingList():
-                    setAddress(chunk['address'])
-                    import pdb; pdb.set_trace()
-                    blocknum = None
-                    for sector in chunk['sectors']:
-                        if not sector['mode'] & DFU_ST_SECTOR_MODE_R:
-                            continue
-                        remain = sector['count'] * sector['size']
-                        while remain:
-                            blocknum = getNextBlockNumber(blocknum)
-                            data = iface_upload(blocknum, min(transfer_size,
-                                remain))
-                            checkStatus()
-                            write(data)
-                            remain -= len(data)
-                            assert remain >= 0, remain
-                        abort()
-        else:
-            def upload():
-                getNextBlockNumber = iface.getNextStandardBlockNumber
+        if stm_format and iface.hasSTMExtensions():
+            # Untested/unfinished code ahead, raise.
+            raise NotImplementedError
+            # TODO: create a valid DfuSe file.
+            setAddress = iface.STM_setAddress
+            for chunk in iface.STM_getDeviceMappingList():
+                setAddress(chunk['address'])
                 blocknum = None
-                while True:
-                    blocknum = getNextBlockNumber(blocknum)
-                    data = iface_upload(blocknum, transfer_size)
-                    checkStatus()
-                    write(data)
-                    if len(data) < transfer_size:
-                        break
-                abort()
-        try:
-            upload()
-        except:
-            exc_info = sys.exc_info()
-            try:
-                abort()
-            except:
-                raise DoubleException(
-                    ''.join(traceback.format_exception(*exc_info)),
-                    traceback.format_exc())
-            raise exc_info[0], exc_info[1], exc_info[2]
+                for sector in chunk['sectors']:
+                    if not sector['mode'] & DFU_ST_SECTOR_MODE_R:
+                        continue
+                    remain = sector['count'] * sector['size']
+                    while len(result) < remain:
+                        data, blocknum = iface_upload(min(transfer_size,
+                            remain), blocknum)
+                        checkStatus()
+                        result += data
+                    assert remain == len(result), (remain, len(result))
+                    abort()
+        else:
+            blocknum = None
+            while True:
+                data, blocknum = iface_upload(transfer_size, blocknum)
+                result += data
+                if len(data) < transfer_size:
+                    break
+            abort()
+        # Add defuse tail
+        device = self.__handle.getDevice()
+        tail = _generateFieldList({
+            'dfu_version': 0x110,
+            'vendor': vendor_specific and device.getVendorID() or 0xffff,
+            'product': product_specific and device.getProductID() or 0xffff,
+            'device': version,
+        }, DFU_SUFFIX_FIELD_LIST)
+        data += ''.join(reversed(tail)) + 'UFD' + \
+            chr(len(tail) + DFU_SUFFIX_BASE_LENGTH)
+        data += pack('<I', crc32(data))
+        return data
 
