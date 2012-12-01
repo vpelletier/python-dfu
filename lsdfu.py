@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import libusb1
 import usb1
 import dfu
 
@@ -33,4 +34,31 @@ if __name__ == '__main__':
         print '  Transfer size: %s bytes' % (size, )
         print '  Mode: %s' % (mode_caption_dict.get(protocol,
             '(unknown: 0x%02x)' % (protocol, )), )
+        try:
+            handle = device.open()
+        except libusb1.USBError, exc:
+            print '  (failed opening device, skipping)'
+            continue
+        dfup = dfu.DFUProtocol(handle)
+        if dfup.hasSTMExtensions():
+            print '  Mappings:'
+            for mapping in dfup.STM_getDeviceMappingList():
+                name = repr(mapping['name'])
+                if mapping['alias']:
+                    name += ' (alias: %r)'
+                size = sum(x['count'] * x['size'] for x in mapping['sectors'])
+                base = mapping['address']
+                print '    0x%x..0x%x (%i bytes): %s' % (base, base + size - 1,
+                    size, name)
+                for sector in mapping['sectors']:
+                    mode = sector['mode']
+                    top = base + sector['count'] * sector['size']
+                    print '      0x%x..0x%x: %i sectors of %i bytes, %s' % (
+                        base, top - 1, sector['count'], sector['size'],
+                        ', '.join(x for x in (
+                            (mode & dfu.DFU_ST_SECTOR_MODE_R) and 'read',
+                            (mode & dfu.DFU_ST_SECTOR_MODE_E) and 'erase',
+                            (mode & dfu.DFU_ST_SECTOR_MODE_W) and 'write',
+                        ) if x))
+                    base = top
 
