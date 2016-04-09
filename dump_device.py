@@ -24,19 +24,18 @@ def main(args=None):
             bus, dev = address.split(':', 1)
             dev = int(dev, 16)
         bus = int(bus, 16)
-    context = usb1.LibUSBContext()
-    for device in context.getDeviceList():
-        if (vendor is not None and (vendor != device.getVendorID() or \
-                (product is not None and product != device.getProductID()))) \
-                or (bus is not None and (bus != device.getBusNumber() or \
-                (dev is not None and dev != device.getDeviceAddress()))):
-            continue
-        break
-    else:
-        print 'No device found.'
-        sys.exit(1)
-    dfu_device = dfu.DFU(device.open())
-    print dfu_device.upload()
+    with usb1.USBContext() as context:
+        for device in context.getDeviceList():
+            if (vendor is not None and (vendor != device.getVendorID() or \
+                    (product is not None and product != device.getProductID()))) \
+                    or (bus is not None and (bus != device.getBusNumber() or \
+                    (dev is not None and dev != device.getDeviceAddress()))):
+                continue
+        else:
+            print 'No device found.'
+            sys.exit(1)
+        dfu_device = dfu.DFU(device.open())
+        print dfu_device.upload()
 
 if __name__ == '__main__':
     main()
